@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+.vscode/
+outputs/
+data/
+debug_paddle.jpg
