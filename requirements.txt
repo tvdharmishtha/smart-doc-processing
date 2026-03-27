@@ -1,22 +1,26 @@
-# Python version requirement: 3.11+
+# Python version: 3.11
 
 # Core dependencies
-fastapi>=0.109.0
-uvicorn>=0.27.0
-python-multipart>=0.0.6
+fastapi==0.109.2
+uvicorn==0.27.1
+python-multipart==0.0.6
 
 # Image processing
-opencv-python-headless>=4.8.1.78
-numpy>=1.26.3
+opencv-python-headless==4.6.0.66
+numpy==1.23.5
 
 # OCR
-easyocr>=1.7.2
-pytesseract>=0.3.10
-Pillow>=10.2.0
+easyocr==1.7.2
+pytesseract==0.3.10
+Pillow==10.2.0
+paddleocr==2.7.0.3
+paddlepaddle==2.6.2
 
 # NLP/Text processing
-python-dateutil>=2.8.2
+python-dateutil==2.8.2
 
 # Excel support
-openpyxl>=3.1.2
-pandas>=2.0.0
+openpyxl==3.1.2
+pandas==1.5.3
+scipy==1.10.1
+scikit-image==0.20.0
