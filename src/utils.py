@@ -1,33 +1,7 @@
 import os
 import json
-import csv
+import hashlib
 from typing import Dict, List, Optional, Any
-from pathlib import Path
-
-
-def load_labels(csv_path: str) -> Dict[str, Dict[str, str]]:
-    """
-    Load ground truth labels from CSV file.
-    
-    Args:
-        csv_path: Path to the labels CSV file
-        
-    Returns:
-        Dictionary mapping filename to label data
-    """
-    labels = {}
-    
-    with open(csv_path, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            filename = row['filename']
-            labels[filename] = {
-                'name': row['name'],
-                'date': row['date'],
-                'amount': row['amount']
-            }
-    
-    return labels
 
 
 def save_results(results: List[Dict[str, Any]], output_path: str) -> None:
@@ -38,96 +12,40 @@ def save_results(results: List[Dict[str, Any]], output_path: str) -> None:
         results: List of result dictionaries
         output_path: Path to output JSON file
     """
+    # Create the output directory before writing the JSON file.
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    
+
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
 
 
-def load_results(results_path: str) -> List[Dict[str, Any]]:
+def _load_json_list_or_empty(results_path: str) -> List[Dict[str, Any]]:
     """
-    Load processing results from JSON file.
-    
+    Load a JSON list from disk, returning an empty list for missing, empty,
+    or invalid files.
+
     Args:
         results_path: Path to results JSON file
-        
+
     Returns:
-        List of result dictionaries
+        List of stored result dictionaries
     """
-    with open(results_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    # Missing file means there are no previously stored results.
+    if not os.path.exists(results_path):
+        return []
 
+    try:
+        with open(results_path, 'r', encoding='utf-8') as f:
+            raw_content = f.read().strip()
+            # Treat an empty file as an empty result list.
+            if not raw_content:
+                return []
 
-def calculate_accuracy(predictions: List[Dict[str, Any]], 
-                       ground_truth: Dict[str, Dict[str, str]]) -> Dict[str, float]:
-    """
-    Calculate accuracy metrics for predictions.
-    
-    Args:
-        predictions: List of prediction dictionaries
-        ground_truth: Dictionary of ground truth labels
-        
-    Returns:
-        Dictionary with accuracy metrics
-    """
-    total = len(predictions)
-    if total == 0:
-        return {'overall': 0.0, 'name': 0.0, 'date': 0.0, 'amount': 0.0}
-    
-    correct_name = 0
-    correct_date = 0
-    correct_amount = 0
-    
-    for pred in predictions:
-        filename = pred.get('filename', '')
-        if filename not in ground_truth:
-            continue
-        
-        gt = ground_truth[filename]
-        
-        pred_name = pred.get('fields', {}).get('name', '') or ''
-        if pred_name.lower().strip() == gt['name'].lower().strip():
-            correct_name += 1
-
-        pred_date = pred.get('fields', {}).get('date', '') or ''
-        if pred_date == gt['date']:
-            correct_date += 1
-
-        pred_amount = pred.get('fields', {}).get('amount', '') or ''
-        gt_amount = gt['amount']
-
-        try:
-            if abs(float(pred_amount) - float(gt_amount)) < 0.01:
-                correct_amount += 1
-        except:
-            pass
-    
-    return {
-        'overall': (correct_name + correct_date + correct_amount) / (total * 3) * 100,
-        'name': correct_name / total * 100,
-        'date': correct_date / total * 100,
-        'amount': correct_amount / total * 100
-    }
-
-
-def get_project_root() -> Path:
-    """
-    Get the project root directory.
-    
-    Returns:
-        Path to project root
-    """
-    return Path(__file__).parent.parent
-
-
-def ensure_directory(path: str) -> None:
-    """
-    Ensure a directory exists, create if it doesn't.
-    
-    Args:
-        path: Directory path
-    """
-    os.makedirs(path, exist_ok=True)
+            data = json.loads(raw_content)
+            return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError):
+        # Invalid JSON should not stop document processing.
+        return []
 
 
 def format_response(extracted_text: str, fields: Dict[str, Any]) -> Dict[str, Any]:
@@ -143,18 +61,86 @@ def format_response(extracted_text: str, fields: Dict[str, Any]) -> Dict[str, An
     """
     cleaned_fields = {}
     for key, value in fields.items():
+        # Skip missing values so the API response stays compact.
         if value is None:
             continue
         if isinstance(value, str):
             if value.strip():
                 cleaned_fields[key] = value
         elif isinstance(value, list):
+            # Store lists only when they contain extracted values.
             if value:
                 cleaned_fields[key] = value
         else:
             cleaned_fields[key] = value
-    
+
     return {
         'extracted_text': extracted_text,
         'fields': cleaned_fields
     }
+
+
+def build_result_record(
+    filename: str,
+    content: bytes,
+    response: Dict[str, Any],
+    content_type: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Build a normalized result record for persistent storage.
+
+    Args:
+        filename: Uploaded file name
+        content: Raw uploaded file bytes
+        response: API response payload
+        content_type: Uploaded file content type
+
+    Returns:
+        Normalized result record
+    """
+    # Use a content hash so the same uploaded file can be recognized later.
+    return {
+        'filename': filename or '',
+        'content_type': content_type or '',
+        'file_hash': hashlib.sha256(content).hexdigest(),
+        'response': response
+    }
+
+
+def append_unique_result(result: Dict[str, Any], output_path: str) -> bool:
+    """
+    Append a result to the JSON file only if an equivalent result is not
+    already stored.
+
+    Duplicate detection is based on the stored file identity and response.
+    If the same file hash or filename is already present with the same
+    response payload, the file is not written again.
+
+    Args:
+        result: Result dictionary to persist
+        output_path: Path to output JSON file
+
+    Returns:
+        True if a new result was added, otherwise False
+    """
+    # Load existing saved responses before checking for duplicates.
+    existing_results = _load_json_list_or_empty(output_path)
+
+    new_filename = result.get('filename', '')
+    new_file_hash = result.get('file_hash', '')
+    new_response = result.get('response', {})
+
+    for existing in existing_results:
+        # A duplicate means the same response was already stored for the
+        # same file content or the same uploaded filename.
+        same_response = existing.get('response', {}) == new_response
+        same_file_hash = bool(new_file_hash) and existing.get('file_hash', '') == new_file_hash
+        same_filename = bool(new_filename) and existing.get('filename', '') == new_filename
+
+        if same_response and (same_file_hash or same_filename):
+            return False
+
+    # Only append when no matching file/response pair exists yet.
+    existing_results.append(result)
+    save_results(existing_results, output_path)
+    return True

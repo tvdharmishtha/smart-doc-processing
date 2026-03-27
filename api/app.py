@@ -14,7 +14,7 @@ import pandas as pd
 
 from src.ocr import OCRPipeline, load_image_from_bytes
 from src.extract import InformationExtractor
-from src.utils import format_response
+from src.utils import format_response, build_result_record, append_unique_result
 
 app = FastAPI(
     title="Smart Document Processing API",
@@ -24,6 +24,7 @@ app = FastAPI(
 
 ocr_pipeline = None
 extractor = None
+sample_results_path = project_root / "outputs" / "sample_results.json"
 
 
 def get_ocr_pipeline():
@@ -69,7 +70,8 @@ async def process_document(file: UploadFile = File(...)):
     try:
         contents = await file.read()
 
-        filename = file.filename.lower() if file.filename else ""
+        original_filename = file.filename or ""
+        filename = original_filename.lower()
         content_type = file.content_type if file.content_type else ""
 
         extracted_text = ""
@@ -99,12 +101,19 @@ async def process_document(file: UploadFile = File(...)):
             extracted_text = ocr.extract_text(image)
 
             if not extracted_text:
-                return format_response("", {"name": None, "date": None, "amount": None})
+                response_payload = format_response("", {"name": None, "date": None, "amount": None})
+                result_record = build_result_record(original_filename, contents, response_payload, content_type)
+                append_unique_result(result_record, str(sample_results_path))
+                return response_payload
 
             extractor = get_extractor()
             fields = extractor.extract_all(extracted_text)
 
-        return format_response(extracted_text, fields)
+        response_payload = format_response(extracted_text, fields)
+        result_record = build_result_record(original_filename, contents, response_payload, content_type)
+        append_unique_result(result_record, str(sample_results_path))
+
+        return response_payload
 
     except HTTPException:
         raise
