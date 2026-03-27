@@ -1,8 +1,3 @@
-"""
-Utility Functions Module
-Provides helper functions for the document processing pipeline.
-"""
-
 import os
 import json
 import csv
@@ -90,21 +85,17 @@ def calculate_accuracy(predictions: List[Dict[str, Any]],
         
         gt = ground_truth[filename]
         
-        # Check name (case-insensitive)
         pred_name = pred.get('fields', {}).get('name', '') or ''
         if pred_name.lower().strip() == gt['name'].lower().strip():
             correct_name += 1
-        
-        # Check date
+
         pred_date = pred.get('fields', {}).get('date', '') or ''
         if pred_date == gt['date']:
             correct_date += 1
-        
-        # Check amount
+
         pred_amount = pred.get('fields', {}).get('amount', '') or ''
         gt_amount = gt['amount']
-        
-        # Compare as floats
+
         try:
             if abs(float(pred_amount) - float(gt_amount)) < 0.01:
                 correct_amount += 1
@@ -150,7 +141,6 @@ def format_response(extracted_text: str, fields: Dict[str, Any]) -> Dict[str, An
     Returns:
         Formatted response dictionary
     """
-    # Clean up None/empty values - handle both strings and arrays
     cleaned_fields = {}
     for key, value in fields.items():
         if value is None:
@@ -159,11 +149,9 @@ def format_response(extracted_text: str, fields: Dict[str, Any]) -> Dict[str, An
             if value.strip():
                 cleaned_fields[key] = value
         elif isinstance(value, list):
-            # Keep non-empty lists
-            if value:  # Non-empty list
+            if value:
                 cleaned_fields[key] = value
         else:
-            # Keep other types as is
             cleaned_fields[key] = value
     
     return {

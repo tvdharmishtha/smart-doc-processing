@@ -1,13 +1,7 @@
-"""
-FastAPI Application for Smart Document Processing
-Provides an endpoint to process document images and extract structured information.
-"""
-
 import os
 import sys
 from pathlib import Path
 
-# Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
@@ -18,19 +12,16 @@ from typing import Optional, Dict, Any, List, Union
 import io
 import pandas as pd
 
-# Import our modules
 from src.ocr import OCRPipeline, load_image_from_bytes
 from src.extract import InformationExtractor
 from src.utils import format_response
 
-# Initialize the app
 app = FastAPI(
     title="Smart Document Processing API",
     description="API for extracting structured information from document images",
     version="1.0.0"
 )
 
-# Initialize OCR and extraction components
 ocr_pipeline = None
 extractor = None
 
@@ -76,59 +67,45 @@ async def process_document(file: UploadFile = File(...)):
         JSON response with extracted text and fields
     """
     try:
-        # Read file contents
         contents = await file.read()
-        
-        # Check file type by content and filename
+
         filename = file.filename.lower() if file.filename else ""
         content_type = file.content_type if file.content_type else ""
-        
+
         extracted_text = ""
         fields = {"name": None, "date": None, "amount": None}
-        
-        # Handle Excel files
+
         if filename.endswith(('.xlsx', '.xls', '.csv')) or 'spreadsheet' in content_type or 'excel' in content_type:
             try:
-                # Read Excel/CSV file
                 if filename.endswith('.csv'):
                     df = pd.read_csv(io.BytesIO(contents))
                 else:
                     df = pd.read_excel(io.BytesIO(contents))
-                
-                # Convert all data to text
+
                 extracted_text = df.to_csv(index=False)
 
-                # Extract structured information from table rows for Excel/CSV files
                 extractor = get_extractor()
                 rows = df.where(pd.notna(df), None).to_dict(orient="records")
                 fields = extractor.extract_from_rows(rows)
-
-                # Convert arrays to list format for JSON response
-                # Keep the arrays in the fields for Excel files
             except Exception as e:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Error reading Excel file: {str(e)}"
                 )
         else:
-            # Handle image files
-            # Load image
             image = load_image_from_bytes(contents)
-            
-            # Extract text using OCR - always use preprocessing for better results
+
             ocr = get_ocr_pipeline()
             extracted_text = ocr.extract_text(image)
 
             if not extracted_text:
                 return format_response("", {"name": None, "date": None, "amount": None})
-            
-            # Extract structured information
+
             extractor = get_extractor()
             fields = extractor.extract_all(extracted_text)
 
-        # Format and return response
         return format_response(extracted_text, fields)
-        
+
     except HTTPException:
         raise
     except Exception as e:
