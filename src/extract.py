@@ -377,7 +377,23 @@ class InformationExtractor:
         candidate = self._strip_spurious_person_suffix(candidate)
         candidate = self._strip_short_trailing_noise(candidate)
         candidate = self._collapse_business_name_noise(candidate)
+        candidate = self._remove_duplicate_tokens(candidate)
         return candidate
+
+    def _remove_duplicate_tokens(self, candidate: str) -> str:
+        """Remove duplicate tokens from name candidate."""
+        tokens = [token for token in candidate.split() if token]
+        if len(tokens) <= 1:
+            return candidate
+        
+        # Remove exact duplicate tokens
+        seen_tokens = []
+        for token in tokens:
+            token_lower = re.sub(r'[^A-Za-z]', '', token).lower()
+            if token_lower not in [re.sub(r'[^A-Za-z]', '', t).lower() for t in seen_tokens]:
+                seen_tokens.append(token)
+        
+        return ' '.join(seen_tokens)
 
     def _is_plausible_name(self, candidate: str) -> bool:
         if not candidate:
@@ -490,6 +506,20 @@ class InformationExtractor:
         weak_pvt_tokens = {'p', 'pu', 'pv', 'pt', 'pm', 'pd', 'put'}
         if letters in weak_pvt_tokens:
             return 'Pvt'
+
+        # Handle OCR noise in business suffixes
+        ocr_noise_map = {
+            'fvat': 'pvt',
+            'fvt': 'pvt',
+            'fva': 'pvt',
+            'fv': 'pvt',
+            'f': 'pvt',
+            'v': 'pvt',
+            'vat': 'pvt',
+            'at': 'pvt',
+        }
+        if letters in ocr_noise_map:
+            return ocr_noise_map[letters].title()
 
         for canonical in ('pvt', 'ltd', 'corp', 'inc', 'llc'):
             if SequenceMatcher(None, letters, canonical).ratio() >= 0.6:
