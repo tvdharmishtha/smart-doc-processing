@@ -10,6 +10,7 @@ opencv-python-headless>=4.8.1.78
 numpy>=1.26.3
 
 # OCR
+paddleocr>=2.8.1
 easyocr>=1.7.2
 pytesseract>=0.3.10
 Pillow>=10.2.0

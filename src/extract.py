@@ -32,6 +32,7 @@ class InformationExtractor:
             'rt', 'sa', 'se', 'sh', 'si', 'sm', 'st', 'ta', 'te', 'th', 'ti', 'to', 'tr', 'va', 've', 'vi',
             'vt', 'wo'
         }
+        self.business_suffix_tokens = {'pvt', 'ltd', 'corp', 'inc', 'llc'}
 
     def _normalize_key(self, key: Any) -> str:
         return re.sub(r'[^a-z0-9]+', '_', str(key).strip().lower()).strip('_')
@@ -78,12 +79,66 @@ class InformationExtractor:
         text = re.sub(r'(?<!\d)(\d{4})[-/\s]?(\d{2})[-/\s]?(\d{2})(?!\d)', r'\1-\2-\3', text)
         text = re.sub(r'(?i)\bPate\b', 'Patel', text)
         text = re.sub(r'(?<=[A-Za-z])[._](?=[A-Za-z])', ' ', text)
+        text = re.sub(r'(?i)(?<=[A-Za-z])(?=(?:Pvt|Ltd|Corp|Inc|LLC)\b)', ' ', text)
         text = re.sub(r'(?i)\bP(?:u|y|t|n)?t\s*\.?\s*Ltd\b', 'Pvt Ltd', text)
         text = re.sub(r'[{}\[\]()|_]', ' ', text)
         text = re.sub(r'[ \t\f\v]+', ' ', text)
         text = re.sub(r'\s*\n\s*', '\n', text)
         text = re.sub(r'\n+', '\n', text)
         return text.strip()
+
+    def _looks_like_person_name(self, tokens: List[str]) -> bool:
+        if len(tokens) != 2:
+            return False
+
+        for token in tokens:
+            letters = re.sub(r'[^A-Za-z]', '', token)
+            if len(letters) < 3:
+                return False
+            if letters.lower() in self.business_suffix_tokens:
+                return False
+            if not token[:1].isupper():
+                return False
+
+        return True
+
+    def _strip_spurious_person_suffix(self, candidate: str) -> str:
+        tokens = [token for token in candidate.split() if token]
+        if len(tokens) == 3:
+            suffix = re.sub(r'[^A-Za-z]', '', tokens[-1]).lower()
+            if suffix in {'inc', 'llc', 'corp'} and self._looks_like_person_name(tokens[:2]):
+                return ' '.join(tokens[:2])
+        return candidate
+
+    def _strip_short_trailing_noise(self, candidate: str) -> str:
+        tokens = [token for token in candidate.split() if token]
+        if len(tokens) >= 3:
+            last_letters = re.sub(r'[^A-Za-z]', '', tokens[-1]).lower()
+            if len(last_letters) <= 2 and self._looks_like_person_name(tokens[:2]):
+                return ' '.join(tokens[:2])
+        return candidate
+
+    def _collapse_business_name_noise(self, candidate: str) -> str:
+        tokens = [token for token in candidate.split() if token]
+        if len(tokens) != 3:
+            return candidate
+
+        first_letters = re.sub(r'[^A-Za-z]', '', tokens[0])
+        middle_letters = re.sub(r'[^A-Za-z]', '', tokens[1])
+        last_letters = re.sub(r'[^A-Za-z]', '', tokens[2]).lower()
+
+        if last_letters not in self.business_suffix_tokens:
+            return candidate
+        if middle_letters.lower() in self.business_suffix_tokens:
+            return candidate
+        if len(first_letters) < 4:
+            return candidate
+
+        middle_score = self._score_token_readability(tokens[1])
+        if len(middle_letters) <= 3 or middle_score < 1.5:
+            return f"{tokens[0]} {tokens[2]}"
+
+        return candidate
 
     def _normalize_date(self, value: str) -> Optional[str]:
         if not value:
@@ -204,6 +259,44 @@ class InformationExtractor:
 
         return self._normalize_amount_number(match.group())
 
+    def _normalize_amount_candidates_from_label(self, value: str) -> List[str]:
+        if value is None:
+            return []
+
+        raw_value = str(value).strip()
+        match = re.search(r'([-+]?)([A-Za-z]?)(\d[\d,]*\.?\d*)', raw_value)
+        if not match:
+            normalized = self._normalize_amount(raw_value)
+            return [normalized] if normalized else []
+
+        sign, prefix, digits = match.groups()
+        candidates = []
+        digit_prefix_map = {
+            'o': ['0'],
+            'q': ['0', '9'],
+            'i': ['1'],
+            'l': ['1'],
+            'z': ['2'],
+            'd': ['3'],
+            'b': ['8'],
+        }
+
+        candidates.append(f"{sign}{digits}")
+        if prefix:
+            for replacement in digit_prefix_map.get(prefix.lower(), []):
+                candidates.append(f"{sign}{replacement}{digits}")
+
+        normalized_candidates = []
+        seen = set()
+        for candidate in candidates:
+            normalized = self._normalize_amount(candidate)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            normalized_candidates.append(normalized)
+
+        return normalized_candidates
+
     def _clean_name_candidate(self, candidate: str) -> str:
         candidate = self._clean_text(candidate)
         candidate = re.split(
@@ -233,6 +326,7 @@ class InformationExtractor:
                 SequenceMatcher(None, lowered, label).ratio()
                 for label in ('name', 'date', 'total', 'amount', 'invoice')
             ) if lowered else 0.0
+            invoice_similarity = SequenceMatcher(None, lowered, 'invoice').ratio() if lowered else 0.0
 
             if lowered in {'pm', 'pn', 'pt', 'pv', 'put'} and next_token.lower() == 'ltd':
                 filtered_tokens.append('Pvt')
@@ -240,6 +334,24 @@ class InformationExtractor:
 
             if label_similarity >= 0.72:
                 continue
+            if index == len(token_list) - 1 and invoice_similarity >= 0.6:
+                continue
+
+            # Dynamic OCR noise detection: filter out short tokens that are likely noise
+            if len(letters) <= 3 and not lowered in self.business_suffix_tokens:
+                # Check if this short token is likely OCR noise
+                vowel_count = sum(char in 'aeiou' for char in lowered)
+                # Very short tokens with no vowels or unusual patterns are likely noise
+                if vowel_count == 0 and len(letters) <= 2:
+                    continue
+                # Short tokens in the middle of a name that don't match common patterns
+                if 0 < index < len(token_list) - 1 and len(letters) <= 2:
+                    # Check if surrounding tokens are business-like
+                    prev_letters = re.sub(r'[^A-Za-z]', '', token_list[index - 1]).lower() if index > 0 else ""
+                    next_letters = re.sub(r'[^A-Za-z]', '', next_token).lower() if next_token else ""
+                    # If surrounded by longer tokens, this short token is likely noise
+                    if len(prev_letters) >= 3 and len(next_letters) >= 3:
+                        continue
 
             if len(filtered_tokens) >= 2 and index == len(token_list) - 1 and letters:
                 vowel_count = sum(char in 'aeiou' for char in lowered)
@@ -252,7 +364,19 @@ class InformationExtractor:
 
             filtered_tokens.append(token)
 
-        candidate = " ".join(filtered_tokens).strip(' .:-')
+        deduped_tokens = []
+        for token in filtered_tokens:
+            lowered = re.sub(r'[^A-Za-z]', '', token).lower()
+            if deduped_tokens:
+                previous = re.sub(r'[^A-Za-z]', '', deduped_tokens[-1]).lower()
+                if lowered in self.business_suffix_tokens and lowered == previous:
+                    continue
+            deduped_tokens.append(token)
+
+        candidate = " ".join(deduped_tokens).strip(' .:-')
+        candidate = self._strip_spurious_person_suffix(candidate)
+        candidate = self._strip_short_trailing_noise(candidate)
+        candidate = self._collapse_business_name_noise(candidate)
         return candidate
 
     def _is_plausible_name(self, candidate: str) -> bool:
@@ -679,6 +803,7 @@ class InformationExtractor:
 
         if field_name == "amount":
             scores = {}
+            normalized_candidates = []
             for value in cleaned_values:
                 normalized = self._normalize_amount(value)
                 if not normalized:
@@ -690,6 +815,30 @@ class InformationExtractor:
                 if 50 <= numeric <= 20000:
                     score += 1.0
                 scores[normalized] = scores.get(normalized, 0.0) + score
+                normalized_candidates.append(normalized)
+
+            for normalized in normalized_candidates:
+                integer_part, decimal_part = normalized.split('.', 1)
+                numeric_value = float(normalized)
+
+                for other in normalized_candidates:
+                    if normalized == other:
+                        continue
+
+                    other_integer, other_decimal = other.split('.', 1)
+                    other_value = float(other)
+
+                    if decimal_part != other_decimal:
+                        continue
+                    if len(integer_part) != len(other_integer) + 1:
+                        continue
+                    if not integer_part.endswith(other_integer):
+                        continue
+                    if not (100 <= numeric_value <= 50000 and 10 <= other_value < 100):
+                        continue
+
+                    scores[normalized] = scores.get(normalized, 0.0) + 1.5
+
             return max(scores, key=scores.get) if scores else None
 
         return cleaned_values[0]
@@ -750,11 +899,14 @@ class InformationExtractor:
         text = self._clean_text(text)
 
         labelled_match = re.search(
-            r'(?i)\b(?:grand total|total amount|total|amount|amt|balance due)\b\s*[:\-]?\s*(?:rs\.?|inr|usd|\$|₹)?\s*([0-9][0-9,]*\.?\d{0,2})',
+            r'(?i)\b(?:grand total|total amount|total|amount|amt|balance due)\b\s*[:\-]?\s*(?:rs\.?|inr|usd|\$|₹)?\s*([A-Za-z]{0,2}\d[\d,]*\.?\d{0,2})',
             text,
         )
         if labelled_match:
-            return self._normalize_amount(labelled_match.group(1))
+            normalized_candidates = self._normalize_amount_candidates_from_label(labelled_match.group(1))
+            best_candidate = self.choose_best_value("amount", normalized_candidates)
+            if best_candidate:
+                return best_candidate
 
         candidates = re.findall(r'(?<![-/])\b\d[\d,]*\.\d{1,2}\b', text)
         if candidates:
@@ -762,11 +914,14 @@ class InformationExtractor:
             return f"{max(values):.2f}"
 
         labelled_integer = re.search(
-            r'(?i)\b(?:grand total|total amount|total|amount|amt|balance due)\b\s*[:\-]?\s*(?:rs\.?|inr|usd|\$|₹)?\s*([0-9][0-9,]*)\b',
+            r'(?i)\b(?:grand total|total amount|total|amount|amt|balance due)\b\s*[:\-]?\s*(?:rs\.?|inr|usd|\$|₹)?\s*([A-Za-z]{0,2}\d[\d,]*)\b',
             text,
         )
         if labelled_integer:
-            return self._normalize_amount(labelled_integer.group(1))
+            normalized_candidates = self._normalize_amount_candidates_from_label(labelled_integer.group(1))
+            best_candidate = self.choose_best_value("amount", normalized_candidates)
+            if best_candidate:
+                return best_candidate
 
         integers = []
         for value in re.findall(r'\b\d[\d,]*\b', text):

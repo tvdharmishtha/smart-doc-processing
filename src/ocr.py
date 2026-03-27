@@ -344,7 +344,7 @@ class OCRPipeline:
         short_tokens = len(re.findall(r'\b[a-zA-Z]\b', text))
         noisy_chars = len(re.findall(r'[^\w\s:.,\-/₹$]', text))
         label_bonus = sum(bool(re.search(pattern, lowered)) for pattern in [r'\bname\b', r'\bdate\b', r'\btotal\b', r'\bamount\b'])
-        amount_match = re.search(r'(?i)\b(?:total|amount)\b\s*[:.]?\s*[^\d\n]{0,2}(\d[\d,]*\.?\d*)', text)
+        amount_match = re.search(r'(?i)\b(?:total|amount)\b\s*[:.]?\s*[^\d\n]{0,2}([A-Za-z]{0,2}\d[\d,]*\.?\d*)', text)
         amount_bonus = 0.0
         fields = self.extractor.extract_all(normalized_text)
         field_count = sum(1 for value in fields.values() if value)
@@ -431,7 +431,7 @@ class OCRPipeline:
 
             raw_amount = self._extract_label_value(
                 text,
-                r'(?i)\b(?:total|amount)\b\s*[:.]?\s*[^\d\n]{0,3}(\d[\d,]*\.?\d*)'
+                r'(?i)\b(?:total|amount)\b\s*[:.]?\s*[^\d\n]{0,3}([A-Za-z]{0,2}\d[\d,]*\.?\d*)'
             )
 
             if 10 <= amount <= 50000:
@@ -467,7 +467,7 @@ class OCRPipeline:
         return candidate
 
     def _aggregate_best_fields(self, candidates):
-        candidates = sorted(candidates, key=lambda item: item.get("score", -1.0), reverse=True)[:8]
+        candidates = sorted(candidates, key=lambda item: item.get("score", -1.0), reverse=True)
         best_fields = {"name": None, "date": None, "amount": None}
         best_scores = {"name": float("-inf"), "date": float("-inf"), "amount": float("-inf")}
         grouped_candidates = {"name": [], "date": [], "amount": []}
@@ -489,6 +489,17 @@ class OCRPipeline:
 
         for field_name, field_candidates in grouped_candidates.items():
             if not field_candidates:
+                continue
+
+            if field_name == "amount":
+                weighted_values = []
+                for field_value, field_score in sorted(field_candidates, key=lambda item: item[1], reverse=True):
+                    repeat_count = max(1, min(6, int(round(field_score / 40.0))))
+                    weighted_values.extend([field_value] * repeat_count)
+
+                selected_value = self.extractor.choose_best_value(field_name, weighted_values)
+                if selected_value:
+                    best_fields[field_name] = selected_value
                 continue
 
             bucket_scores = []

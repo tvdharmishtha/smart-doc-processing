@@ -72,6 +72,19 @@ py -3.11 -m venv venv
 pip install -r requirements.txt
 ```
 
+### 4. Run evaluation
+
+To calculate document-level and field-level accuracy against [`data/labels.csv`](data/labels.csv), run:
+
+```bash
+python evaluate.py
+```
+
+This creates [`outputs/evaluation_summary.json`](outputs/evaluation_summary.json) with:
+- exact-match success rate
+- field-wise accuracy for `name`, `date`, and `amount`
+- failure cases with expected vs predicted values
+
 ## How to Run the API
 
 Run the FastAPI app with Uvicorn:
@@ -148,6 +161,12 @@ The API is implemented in `api/app.py`.
 - Routes spreadsheet files directly through row parsing + extraction
 - Returns a consistent JSON structure for clients
 
+### 4. Evaluation
+
+- [`evaluate.py`](evaluate.py:1) loads [`data/labels.csv`](data/labels.csv) and evaluates predictions against the reference labels
+- Stores aggregate accuracy and failure details in [`outputs/evaluation_summary.json`](outputs/evaluation_summary.json)
+- Keeps request-level prediction examples in [`outputs/sample_results.json`](outputs/sample_results.json)
+
 ## Assumptions Made
 
 - Documents are mostly invoice-like and contain recognizable `name`, `date`, and `amount` fields.
@@ -162,12 +181,19 @@ The API is implemented in `api/app.py`.
 - OCR quality depends heavily on image clarity, skew, lighting, and text size.
 - The API currently extracts only three fields: `name`, `date`, and `amount`.
 - Error handling returns generic API errors for unexpected processing failures and does not yet include detailed validation diagnostics.
+- Evaluation uses exact normalized matching, so partially-correct outputs may still count as failures.
 
 ## Project Structure
 
 ```text
 api/
   app.py
+data/
+  labels.csv
+evaluate.py
+outputs/
+  evaluation_summary.json
+  sample_results.json
 src/
   extract.py
   ocr.py
@@ -180,3 +206,4 @@ README.md
 
 - If PaddleOCR model initialization takes time on first run, allow the process to finish before testing requests.
 - Keep the virtual environment activated while running the API and installing packages.
+- Run [`evaluate.py`](evaluate.py:1) after testing to generate a reproducible accuracy summary for submission.
