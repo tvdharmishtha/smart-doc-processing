@@ -51,21 +51,6 @@ def get_extractor():
     return extractor
 
 
-def format_structured_invoice_text(fields: Dict[str, Any]) -> str:
-    """Build canonical normalized text output from extracted invoice fields."""
-    lines = ["Invoice"]
-    if fields.get("name"):
-        lines.append(f"Name: {fields['name']}")
-    if fields.get("date"):
-        lines.append(f"Date: {fields['date']}")
-    if fields.get("amount"):
-        amount = str(fields["amount"])
-        if amount.endswith(".00"):
-            amount = amount[:-3]
-        lines.append(f"Total: {amount}")
-    return "\n".join(lines)
-
-
 class ProcessDocumentResponse(BaseModel):
     """Response model for document processing."""
     extracted_text: str
@@ -140,10 +125,6 @@ async def process_document(file: UploadFile = File(...)):
             # Extract structured information
             extractor = get_extractor()
             fields = extractor.extract_all(extracted_text)
-
-            # Dynamically normalize the OCR text from the extracted fields.
-            if any(fields.values()):
-                extracted_text = format_structured_invoice_text(fields)
 
         # Format and return response
         return format_response(extracted_text, fields)
